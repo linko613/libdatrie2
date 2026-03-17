@@ -1,0 +1,162 @@
+name: ✅ 最终版 - 编译 Trie DLL for 易语言
+
+on:
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: dockcross/windows-static-x86  # 🚀 关键：使用完整的 MinGW 交叉编译容器
+
+    steps:
+      - name: 检出你的代码
+        uses: actions/checkout@v4
+        with:
+          path: libdatrie2
+
+      - name: 安装构建依赖
+        run: |
+          apt-get update
+          apt-get install -y autoconf automake libtool pkg-config
+
+      - name: 构建 libdatrie2 (禁用所有外部依赖)
+        run: |
+          cd libdatrie2
+          
+          # 生成配置脚本
+          ./autogen.sh
+          
+          # 强制禁用 iconv 和所有外部库
+          export ac_cv_func_iconv_open=no
+          export am_cv_func_iconv=no
+          
+          # 配置为纯 32 位 DLL，不依赖任何外部库
+          ./configure \
+            --host=i686-w64-mingw32 \
+            --prefix=$PWD/install \
+            --enable-shared \
+            --disable-static \
+            --without-libiconv-prefix
+          
+          # 编译
+          make -j$(nproc)
+          make install
+
+      - name: 创建易语言封装（返回所有匹配）
+        run: |
+          cd libdatrie2
+          
+          # 创建封装头文件
+          cat > trie_wrapper.h << 'EOF'
+          #ifndef TRIE_WRAPPER_H
+          #define TRIE_WRAPPER_H
+          
+          #define TRIE_API __declspec(dllexport)
+          
+          typedef struct {
+              char keyword[256];
+              int type_id;
+          } MatchResult;
+          
+          TRIE_API void* __stdcall Trie_Create(void);
+          TRIE_API int __stdcall Trie_Add(void* trie, const char* keyword, int type_id);
+          TRIE_API int __stdcall Trie_SearchAll(void* trie, const char* text, MatchResult* results, int* result_count);
+          TRIE_API int __stdcall Trie_Delete(void* trie, const char* keyword);
+          TRIE_API void __stdcall Trie_Free(void* trie);
+          
+          EOF
+          
+          # 创建封装实现文件
+          cat > trie_wrapper.c << 'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <datrie/trie.h>
+          #include "trie_wrapper.h"
+          
+          #define MAX_KEYWORD_LEN 256
+          
+          void* __stdcall Trie_Create(void) {
+              return trie_new();
+          }
+          
+          int __stdcall Trie_Add(void* trie, const char* keyword, int type_id) {
+              if (!trie || !keyword) return 0;
+              return trie_store((Trie*)trie, keyword, (void*)(intptr_t)type_id);
+          }
+          
+          int __stdcall Trie_SearchAll(void* trie, const char* text, MatchResult* results, int* result_count) {
+              if (!trie || !text || !results || !result_count) return 0;
+              
+              int max_results = *result_count;
+              int found = 0;
+              int text_len = strlen(text);
+              
+              for (int start = 0; start < text_len && found < max_results; start++) {
+                  TrieState *state = trie_root((Trie*)trie);
+                  if (!state) continue;
+                  
+                  for (int pos = start; pos < text_len; pos++) {
+                      if (!trie_state_walk(state, text[pos])) break;
+                      
+                      if (trie_state_is_terminal(state)) {
+                          void *data = trie_state_get_data(state);
+                          if (data) {
+                              int key_len = pos - start + 1;
+                              if (key_len < MAX_KEYWORD_LEN) {
+                                  memcpy(results[found].keyword, &text[start], key_len);
+                                  results[found].keyword[key_len] = '\0';
+                                  results[found].type_id = (int)(intptr_t)data;
+                                  found++;
+                                  if (found >= max_results) break;
+                              }
+                          }
+                      }
+                  }
+                  trie_state_free(state);
+              }
+              
+              *result_count = found;
+              return found > 0;
+          }
+          
+          int __stdcall Trie_Delete(void* trie, const char* keyword) {
+              if (!trie || !keyword) return 0;
+              return trie_delete((Trie*)trie, keyword);
+          }
+          
+          void __stdcall Trie_Free(void* trie) {
+              if (trie) trie_free((Trie*)trie);
+          }
+          EOF
+
+      - name: 编译最终 DLL
+        run: |
+          cd libdatrie2
+          
+          # 编译封装层
+          i686-w64-mingw32-gcc \
+            -O2 \
+            -Iinstall/include \
+            -c trie_wrapper.c \
+            -o trie_wrapper.o
+          
+          # 链接成 DLL
+          i686-w64-mingw32-gcc \
+            -shared \
+            -o TrieDLL.dll \
+            trie_wrapper.o \
+            install/lib/libdatrie.dll.a \
+            -Wl,--kill-at \
+            -static-libgcc
+          
+          # 验证导出函数
+          echo "✅ 导出函数列表："
+          i686-w64-mingw32-objdump -p TrieDLL.dll | grep "Trie_"
+
+      - name: 上传成品
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrieDLL-for-易语言
+          path: libdatrie2/TrieDLL.dll
