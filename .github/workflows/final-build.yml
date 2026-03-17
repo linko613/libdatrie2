@@ -1,4 +1,4 @@
-name: Fixed-Standalone-Trie
+name: Final-Standalone-Trie
 
 on:
   workflow_dispatch:
@@ -86,21 +86,14 @@ jobs:
           [System.IO.File]::WriteAllText("trie_wrapper.c", $code)
 
       - name: Compile Standalone DLL
-        shell: cmd  # 惹不起 PowerShell，我们换回最原始的 CMD
+        shell: cmd
         run: |
-          :: 1. 手动列出核心文件，避开 shell 扫描
-          :: 2. 移除所有复杂的宏定义，只保留核心编译
-          cl.exe /LD /O2 /MT trie_wrapper.c ^
-          datrie_src\datrie\alpha-map.c ^
-          datrie_src\datrie\dstring.c ^
-          datrie_src\datrie\tail.c ^
-          datrie_src\datrie\trie.c ^
-          datrie_src\datrie\trie-string.c ^
-          /I "datrie_src" ^
-          /FE:TrieDLL.dll
+          :: 注意：/Fe 必须是小写 e，后面直接紧跟文件名
+          :: 移除了多余的空格和换行符，确保 CMD 解析万无一失
+          cl.exe /LD /O2 /MT trie_wrapper.c datrie_src\datrie\alpha-map.c datrie_src\datrie\dstring.c datrie_src\datrie\tail.c datrie_src\datrie\trie.c datrie_src\datrie\trie-string.c /I "datrie_src" /Fetrie.dll
           
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Standalone-TrieDLL-x86
-          path: TrieDLL.dll
+          name: Standalone-TrieDLL
+          path: trie.dll
