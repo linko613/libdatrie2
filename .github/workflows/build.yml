@@ -12,7 +12,6 @@ jobs:
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
-          # 指定安装 32 位 (i686) 环境
           msystem: MINGW32
           update: true
           install: mingw-w64-i686-gcc
@@ -20,12 +19,17 @@ jobs:
       - name: Compile 32-bit DLL
         shell: msys2 {0}
         run: |
-          # 检查文件是否存在（调试用）
-          ls -l bridge.c
-          
-          # 编译命令
-          # 使用 -m32 确保输出为 32 位，-Wl,--kill-at 去除函数名后缀以便易语言调用
-          gcc -O3 -shared -m32 -o datrie_x86.dll bridge.c datrie/trie.c datrie/darray.c datrie/alpha-map.c datrie/tail.c -I. -Wl,--kill-at
+          # 编译命令：这次补齐了 fileutils.c 和 trie-string.c
+          # 同时添加了 -Idatrie 确保头文件搜寻路径正确
+          gcc -O3 -shared -m32 -o datrie_x86.dll \
+            bridge.c \
+            datrie/trie.c \
+            datrie/darray.c \
+            datrie/alpha-map.c \
+            datrie/tail.c \
+            datrie/fileutils.c \
+            datrie/trie-string.c \
+            -I. -Idatrie -Wl,--kill-at
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
