@@ -1,0 +1,29 @@
+name: Build Datrie x86 for E
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          # 安装 32 位编译环境
+          install: mingw-w64-i686-gcc 
+
+      - name: Compile 32-bit DLL
+        shell: msys2 {0}
+        run: |
+          # 1. 检查 bridge.c 是否在根目录
+          # 2. 编译 DLL（-m32 强制 32 位，-Wl,--kill-at 去除函数名后缀）
+          gcc -O3 -shared -m32 -o datrie_x86.dll bridge.c datrie/trie.c datrie/darray.c datrie/alpha-map.c datrie/tail.c -I. -Wl,--kill-at
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: datrie-x86-dll
+          path: datrie_x86.dll
