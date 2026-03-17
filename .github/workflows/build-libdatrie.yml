@@ -1,4 +1,4 @@
-name: Build libdatrie2 DLL for 易语言
+name: Build Trie DLL for 易语言 (直接使用系统libdatrie2)
 
 on:
   workflow_dispatch:
@@ -8,46 +8,20 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout your forked repo
+      - name: Checkout your repo (只用来存放workflow)
         uses: actions/checkout@v4
-        with:
-          path: libdatrie2
       
-      - name: Install MinGW toolchain
+      - name: Install MinGW toolchain and libdatrie2
         run: |
           sudo apt update
           sudo apt install -y \
             gcc-mingw-w64-i686 \
             g++-mingw-w64-i686 \
-            make \
-            autoconf \
-            automake \
-            libtool \
-            pkg-config \
-            mingw-w64-tools
-      
-      - name: Build libdatrie2 for Windows
-        run: |
-          cd libdatrie2
-          
-          # 生成配置文件
-          ./autogen.sh
-          
-          # 配置为生成 32 位 DLL
-          ./configure \
-            --host=i686-w64-mingw32 \
-            --prefix=$PWD/install \
-            --enable-shared \
-            --disable-static
-          
-          # 编译
-          make -j$(nproc)
-          make install
+            mingw-w64-tools \
+            libdatrie-dev  # 安装系统的 libdatrie2
       
       - name: Create 易语言 wrapper
         run: |
-          cd libdatrie2
-          
           # 创建封装头文件
           cat > trie_wrapper.h << 'EOF'
           #ifndef TRIE_WRAPPER_H
@@ -108,6 +82,7 @@ jobs:
               int found = 0;
               int text_len = strlen(text);
               
+              // 对每个起始位置尝试匹配
               for (int start = 0; start < text_len && found < max_results; start++) {
                   TrieState *state = trie_root((Trie*)trie);
                   if (!state) continue;
@@ -155,28 +130,30 @@ jobs:
           }
           EOF
       
-      - name: Compile final DLL
+      - name: Compile DLL (直接链接系统libdatrie2)
         run: |
-          cd libdatrie2
-          
           # 编译封装层
           i686-w64-mingw32-gcc \
             -O2 \
-            -Iinstall/include \
+            -I/usr/include \
             -c trie_wrapper.c \
             -o trie_wrapper.o
           
-          # 链接成DLL
+          # 链接成DLL - 直接链接系统的 libdatrie2
           i686-w64-mingw32-gcc \
             -shared \
             -o TrieDLL.dll \
             trie_wrapper.o \
-            install/lib/libdatrie.dll.a \
+            -ldatrie \
             -Wl,--kill-at \
             -static-libgcc
+          
+          # 查看导出函数
+          echo "=== DLL Export Functions ==="
+          i686-w64-mingw32-objdump -p TrieDLL.dll | grep "Trie_"
       
       - name: Upload DLL
         uses: actions/upload-artifact@v4
         with:
           name: TrieDLL-for-yiyuyan
-          path: libdatrie2/TrieDLL.dll
+          path: TrieDLL.dll
