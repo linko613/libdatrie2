@@ -1,4 +1,4 @@
-name: Ultimate-Standalone-Trie
+name: Fixed-Standalone-Trie
 
 on:
   workflow_dispatch:
@@ -21,10 +21,9 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/tlwg/libdatrie.git datrie_src
 
-      - name: Create Wrapper (No-Escape Version)
+      - name: Create Wrapper
         shell: pwsh
         run: |
-          # 使用更安全的 Here-String 注入
           $code = @"
           #include <stdio.h>
           #include <stdlib.h>
@@ -87,22 +86,19 @@ jobs:
           [System.IO.File]::WriteAllText("trie_wrapper.c", $code)
 
       - name: Compile Standalone DLL
-        shell: pwsh
+        shell: cmd  # 惹不起 PowerShell，我们换回最原始的 CMD
         run: |
-          # 1. 找出所有需要的 .c 文件（排除掉带 main 函数的工具文件）
-          $src = Get-ChildItem "datrie_src/datrie/*.c" | Where-Object { 
-              $_.Name -notmatch "trietool|dcexample" 
-          } | ForEach-Object { $_.FullName }
+          :: 1. 手动列出核心文件，避开 shell 扫描
+          :: 2. 移除所有复杂的宏定义，只保留核心编译
+          cl.exe /LD /O2 /MT trie_wrapper.c ^
+          datrie_src\datrie\alpha-map.c ^
+          datrie_src\datrie\dstring.c ^
+          datrie_src\datrie\tail.c ^
+          datrie_src\datrie\trie.c ^
+          datrie_src\datrie\trie-string.c ^
+          /I "datrie_src" ^
+          /FE:TrieDLL.dll
           
-          # 2. 构造编译命令，直接避免在字符串里写复杂的引号转义
-          # /MT: 静态链接运行时库 (不再需要 VC++ Redistributable)
-          # /D: 定义宏，解决源码里的路径依赖
-          # /I: 包含头文件路径
-          & cl.exe /LD /O2 /MT trie_wrapper.c $src `
-            /I "datrie_src" `
-            /D "DATA_DIR=\".\"" `
-            /FE:TrieDLL.dll
-
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
