@@ -1,4 +1,4 @@
-name: Independent-Trie-Build
+name: Ultimate-Standalone-Trie
 
 on:
   workflow_dispatch:
@@ -8,24 +8,23 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      - name: Checkout Wrapper
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up MSVC
+      - name: Set up MSVC (x86)
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x86  # 强制使用 x86 架构，兼容性最好
+          arch: x86 
 
       - name: Download libdatrie Source
         shell: pwsh
         run: |
-          # 直接从官方镜像拉取源码，避开 vcpkg 的环境坑
           git clone --depth 1 https://github.com/tlwg/libdatrie.git datrie_src
 
-      - name: Create Wrapper and Compile All-in-One
+      - name: Create Wrapper (No-Escape Version)
         shell: pwsh
         run: |
-          # 1. 准备封装代码 (trie_wrapper.c)
+          # 使用更安全的 Here-String 注入
           $code = @"
           #include <stdio.h>
           #include <stdlib.h>
@@ -35,18 +34,18 @@ jobs:
 
           #define DLLEXPORT __declspec(dllexport)
 
-          DLLEXPORT Trie* __stdcall Trie_Create(void) {
+          DLLEXPORT void* __stdcall Trie_Create(void) {
               AlphaMap *amap = alpha_map_new();
               if (!amap) return NULL;
               alpha_map_add_range(amap, 0x00, 0xff);
               Trie *trie = trie_new(amap);
               alpha_map_free(amap);
-              return trie;
+              return (void*)trie;
           }
 
-          DLLEXPORT int __stdcall Trie_Add(Trie* trie, const char* key, int type_id) {
+          DLLEXPORT int __stdcall Trie_Add(void* trie, const char* key, int type_id) {
               if (!trie || !key) return 0;
-              return trie_store(trie, (const AlphaChar*)key, (TrieData)type_id);
+              return trie_store((Trie*)trie, (const AlphaChar*)key, (TrieData)type_id);
           }
 
           typedef struct {
@@ -54,13 +53,13 @@ jobs:
               int type_id;
           } MatchResult;
 
-          DLLEXPORT int __stdcall Trie_SearchAll(Trie* trie, const char* text, MatchResult* results, int* count) {
-              if (!trie || !text || !results) return 0;
+          DLLEXPORT int __stdcall Trie_SearchAll(void* trie, const char* text, MatchResult* results, int* count) {
+              if (!trie || !text || !results || !count) return 0;
               int max_found = *count;
               int found = 0;
-              int text_len = strlen(text);
+              int text_len = (int)strlen(text);
               for (int i = 0; i < text_len && found < max_found; i++) {
-                  TrieState *state = trie_root(trie);
+                  TrieState *state = trie_root((Trie*)trie);
                   for (int j = i; j < text_len; j++) {
                       if (!trie_state_walk(state, (AlphaChar)text[j])) break;
                       if (trie_state_is_terminal(state)) {
@@ -81,25 +80,31 @@ jobs:
               return (found > 0);
           }
 
-          DLLEXPORT void __stdcall Trie_Free(Trie* trie) {
-              if (trie) trie_free(trie);
+          DLLEXPORT void __stdcall Trie_Free(void* trie) {
+              if (trie) trie_free((Trie*)trie);
           }
           "@
-          $code | Out-File -FilePath trie_wrapper.c -Encoding utf8
+          [System.IO.File]::WriteAllText("trie_wrapper.c", $code)
 
-          # 2. 收集 libdatrie 的所有核心源码（这些是它运行必须的文件）
-          $src_files = Get-ChildItem -Path "datrie_src/datrie/*.c" -Exclude "dcexample.c", "trietool.c"
-          $all_sources = "trie_wrapper.c " + ($src_files -join " ")
-
-          # 3. 静态编译成一个独立的 DLL
-          # /MT 选项：将运行时库也塞进去，确保 DLL 不依赖 VCRUNTIME140.dll 等环境
-          cl.exe /LD /O2 /MT $all_sources `
+      - name: Compile Standalone DLL
+        shell: pwsh
+        run: |
+          # 1. 找出所有需要的 .c 文件（排除掉带 main 函数的工具文件）
+          $src = Get-ChildItem "datrie_src/datrie/*.c" | Where-Object { 
+              $_.Name -notmatch "trietool|dcexample" 
+          } | ForEach-Object { $_.FullName }
+          
+          # 2. 构造编译命令，直接避免在字符串里写复杂的引号转义
+          # /MT: 静态链接运行时库 (不再需要 VC++ Redistributable)
+          # /D: 定义宏，解决源码里的路径依赖
+          # /I: 包含头文件路径
+          & cl.exe /LD /O2 /MT trie_wrapper.c $src `
             /I "datrie_src" `
             /D "DATA_DIR=\".\"" `
-            /OUT:TrieDLL.dll
+            /FE:TrieDLL.dll
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Standalone-TrieDLL
+          name: Standalone-TrieDLL-x86
           path: TrieDLL.dll
