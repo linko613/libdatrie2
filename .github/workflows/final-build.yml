@@ -1,86 +1,109 @@
-name: 真-最终版
+name: libdatrie-windows-build
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest  # 直接用 Windows 环境
+    runs-on: windows-latest
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          path: libdatrie2
-      
-      - name: Install vcpkg
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1 # 激活 MSVC 命令行工具
+
+      - name: Install libdatrie via vcpkg
         run: |
-          git clone https://github.com/Microsoft/vcpkg.git
-          .\vcpkg\bootstrap-vcpkg.bat
-      
-      - name: Install libdatrie
+          vcpkg install libdatrie:x86-windows
+          vcpkg integrate install
+
+      - name: Create wrapper code (trie.c)
+        shell: pwsh
         run: |
-          .\vcpkg\vcpkg install libdatrie:x86-windows
-      
-      - name: Compile DLL
-        run: |
-          # 创建封装代码
           $code = @"
           #include <stdio.h>
-          #include <string.h>
+          #include <stdlib.h>
           #include <datrie/trie.h>
-          
-          __declspec(dllexport) void* __stdcall Trie_Create(void) {
-              return trie_new();
+
+          // 导出宏
+          #define DLLEXPORT __declspec(dllexport)
+
+          DLLEXPORT Trie* __stdcall Trie_Create(void) {
+              // libdatrie 需要 AlphaMap 才能工作
+              AlphaMap *amap = alpha_map_new();
+              if (!amap) return NULL;
+              // 默认添加全字符集支持 (0-255)
+              alpha_map_add_range(amap, 0x00, 0xff);
+              Trie *trie = trie_new(amap);
+              alpha_map_free(amap); // trie 内部会引用，这里可以释放
+              return trie;
           }
-          
-          __declspec(dllexport) int __stdcall Trie_Add(void* trie, const char* key, int type) {
-              return trie_store((Trie*)trie, key, (void*)(intptr_t)type);
+
+          DLLEXPORT int __stdcall Trie_Add(Trie* trie, const char* key, int type_id) {
+              if (!trie || !key) return 0;
+              // 将 type_id 存入 trie
+              return trie_store(trie, (const AlphaChar*)key, (TrieData)type_id);
           }
-          
+
           typedef struct {
               char keyword[256];
               int type_id;
           } MatchResult;
-          
-          __declspec(dllexport) int __stdcall Trie_SearchAll(void* trie, const char* text, MatchResult* results, int* count) {
-              int max = *count;
-              int found = 0;
-              int len = strlen(text);
+
+          DLLEXPORT int __stdcall Trie_SearchAll(Trie* trie, const char* text, MatchResult* results, int* count) {
+              if (!trie || !text || !results) return 0;
               
-              for (int start = 0; start < len && found < max; start++) {
-                  TrieState* state = trie_root((Trie*)trie);
-                  for (int pos = start; pos < len; pos++) {
-                      if (!trie_state_walk(state, text[pos])) break;
+              int max_found = *count;
+              int found = 0;
+              int text_len = strlen(text);
+
+              for (int i = 0; i < text_len && found < max_found; i++) {
+                  TrieState *state = trie_root(trie);
+                  for (int j = i; j < text_len; j++) {
+                      if (!trie_state_walk(state, (AlphaChar)text[j])) break;
                       if (trie_state_is_terminal(state)) {
-                          void* data = trie_state_get_data(state);
-                          if (data) {
-                              int klen = pos - start + 1;
-                              memcpy(results[found].keyword, &text[start], klen);
-                              results[found].keyword[klen] = 0;
-                              results[found].type_id = (int)(intptr_t)data;
+                          TrieData data = trie_state_get_data(state);
+                          int word_len = j - i + 1;
+                          if (word_len < 256) {
+                              memcpy(results[found].keyword, &text[i], word_len);
+                              results[found].keyword[word_len] = '\0';
+                              results[found].type_id = (int)data;
                               found++;
+                              if (found >= max_found) break;
                           }
                       }
                   }
                   trie_state_free(state);
               }
               *count = found;
-              return found > 0;
+              return (found > 0);
           }
-          
-          __declspec(dllexport) void __stdcall Trie_Free(void* trie) {
-              trie_free((Trie*)trie);
+
+          DLLEXPORT void __stdcall Trie_Free(Trie* trie) {
+              if (trie) trie_free(trie);
           }
           "@
+          $code | Out-File -FilePath trie.c -Encoding utf8
+
+      - name: Compile with MSVC
+        shell: pwsh
+        run: |
+          # 自动获取 vcpkg 的包含路径和库路径
+          $VCPKG_ROOT = "C:/vcpkg/installed/x86-windows"
           
-          $code | Out-File -FilePath trie.c -Encoding ASCII
-          
-          # 编译
-          gcc -shared -o TrieDLL.dll trie.c -I./vcpkg/installed/x86-windows/include -L./vcpkg/installed/x86-windows/lib -ldatrie -Wl,--kill-at
-      
-      - name: Upload
+          cl.exe /LD /O2 trie.c `
+            /I "$VCPKG_ROOT/include" `
+            /link `
+            /LIBPATH:"$VCPKG_ROOT/lib" `
+            libdatrie.lib `
+            /OUT:TrieDLL.dll
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TrieDLL
-          path: TrieDLL.dll
+          name: TrieDLL-x86
+          path: |
+            TrieDLL.dll
+            C:/vcpkg/installed/x86-windows/bin/libdatrie.dll
