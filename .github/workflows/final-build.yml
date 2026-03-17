@@ -1,4 +1,4 @@
-name: libdatrie-windows-build
+name: Independent-Trie-Build
 
 on:
   workflow_dispatch:
@@ -8,42 +8,44 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      - name: Checkout
+      - name: Checkout Wrapper
         uses: actions/checkout@v4
 
       - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1 # 激活 MSVC 命令行工具
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86  # 强制使用 x86 架构，兼容性最好
 
-      - name: Install libdatrie via vcpkg
-        run: |
-          vcpkg install libdatrie:x86-windows
-          vcpkg integrate install
-
-      - name: Create wrapper code (trie.c)
+      - name: Download libdatrie Source
         shell: pwsh
         run: |
+          # 直接从官方镜像拉取源码，避开 vcpkg 的环境坑
+          git clone --depth 1 https://github.com/tlwg/libdatrie.git datrie_src
+
+      - name: Create Wrapper and Compile All-in-One
+        shell: pwsh
+        run: |
+          # 1. 准备封装代码 (trie_wrapper.c)
           $code = @"
           #include <stdio.h>
           #include <stdlib.h>
-          #include <datrie/trie.h>
+          #include <string.h>
+          #include "datrie_src/datrie/trie.h"
+          #include "datrie_src/datrie/alpha-map.h"
 
-          // 导出宏
           #define DLLEXPORT __declspec(dllexport)
 
           DLLEXPORT Trie* __stdcall Trie_Create(void) {
-              // libdatrie 需要 AlphaMap 才能工作
               AlphaMap *amap = alpha_map_new();
               if (!amap) return NULL;
-              // 默认添加全字符集支持 (0-255)
               alpha_map_add_range(amap, 0x00, 0xff);
               Trie *trie = trie_new(amap);
-              alpha_map_free(amap); // trie 内部会引用，这里可以释放
+              alpha_map_free(amap);
               return trie;
           }
 
           DLLEXPORT int __stdcall Trie_Add(Trie* trie, const char* key, int type_id) {
               if (!trie || !key) return 0;
-              // 将 type_id 存入 trie
               return trie_store(trie, (const AlphaChar*)key, (TrieData)type_id);
           }
 
@@ -54,11 +56,9 @@ jobs:
 
           DLLEXPORT int __stdcall Trie_SearchAll(Trie* trie, const char* text, MatchResult* results, int* count) {
               if (!trie || !text || !results) return 0;
-              
               int max_found = *count;
               int found = 0;
               int text_len = strlen(text);
-
               for (int i = 0; i < text_len && found < max_found; i++) {
                   TrieState *state = trie_root(trie);
                   for (int j = i; j < text_len; j++) {
@@ -85,25 +85,21 @@ jobs:
               if (trie) trie_free(trie);
           }
           "@
-          $code | Out-File -FilePath trie.c -Encoding utf8
+          $code | Out-File -FilePath trie_wrapper.c -Encoding utf8
 
-      - name: Compile with MSVC
-        shell: pwsh
-        run: |
-          # 自动获取 vcpkg 的包含路径和库路径
-          $VCPKG_ROOT = "C:/vcpkg/installed/x86-windows"
-          
-          cl.exe /LD /O2 trie.c `
-            /I "$VCPKG_ROOT/include" `
-            /link `
-            /LIBPATH:"$VCPKG_ROOT/lib" `
-            libdatrie.lib `
+          # 2. 收集 libdatrie 的所有核心源码（这些是它运行必须的文件）
+          $src_files = Get-ChildItem -Path "datrie_src/datrie/*.c" -Exclude "dcexample.c", "trietool.c"
+          $all_sources = "trie_wrapper.c " + ($src_files -join " ")
+
+          # 3. 静态编译成一个独立的 DLL
+          # /MT 选项：将运行时库也塞进去，确保 DLL 不依赖 VCRUNTIME140.dll 等环境
+          cl.exe /LD /O2 /MT $all_sources `
+            /I "datrie_src" `
+            /D "DATA_DIR=\".\"" `
             /OUT:TrieDLL.dll
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: TrieDLL-x86
-          path: |
-            TrieDLL.dll
-            C:/vcpkg/installed/x86-windows/bin/libdatrie.dll
+          name: Standalone-TrieDLL
+          path: TrieDLL.dll
