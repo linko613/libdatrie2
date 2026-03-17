@@ -3,7 +3,6 @@ name: Build Datrie x86 for E
 on: [push, workflow_dispatch]
 
 env:
-  # 解决你看到的 Node.js 24 警告，并强制环境
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -23,17 +22,12 @@ jobs:
       - name: Compile 32-bit DLL
         shell: msys2 {0}
         run: |
-          # 1. 确保进入源码目录（如果 fork 的结构有变）
-          # 2. 这里的编译命令包含了 libdatrie 运行所需的所有核心组件
-          # 3. 使用 -D 宏定义确保 Windows 下的符号导出正确
+          # 使用 datrie/*.c 包含该目录下所有的实现文件，彻底解决漏搜问题
+          # -m32: 强制32位
+          # -Wl,--kill-at: 去掉 @n 后缀，方便易语言直接调用函数名
           gcc -O3 -shared -m32 -o datrie_x86.dll \
             bridge.c \
-            datrie/trie.c \
-            datrie/darray.c \
-            datrie/alpha-map.c \
-            datrie/tail.c \
-            datrie/fileutils.c \
-            datrie/trie-string.c \
+            datrie/*.c \
             -I. -Idatrie \
             -Wl,--kill-at \
             -D_WIN32
