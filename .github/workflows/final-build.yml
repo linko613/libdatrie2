@@ -1,42 +1,47 @@
-name: 真正的最终版 - 直接获取现成DLL
+name: 真-最终版
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest  # 直接用 Windows 环境
     
     steps:
-      - name: 下载 MSYS2 预编译的 libdatrie
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: libdatrie2
+      
+      - name: Install vcpkg
         run: |
-          # 下载 MSYS2 的 mingw32 libdatrie 包
-          wget https://repo.msys2.org/mingw/mingw32/mingw-w64-i686-libdatrie-0.2.12-1-any.pkg.tar.zst
-          # 解压
-          tar -xvf mingw-w64-i686-libdatrie-0.2.12-1-any.pkg.tar.zst
-          
-      - name: 创建易语言封装头文件
+          git clone https://github.com/Microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat
+      
+      - name: Install libdatrie
         run: |
-          cat > trie_wrapper.c << 'EOF'
-          #include <windows.h>
+          .\vcpkg\vcpkg install libdatrie:x86-windows
+      
+      - name: Compile DLL
+        run: |
+          # 创建封装代码
+          $code = @"
           #include <stdio.h>
           #include <string.h>
           #include <datrie/trie.h>
-          
-          #define MAX_KEYWORD_LEN 256
-          
-          typedef struct {
-              char keyword[MAX_KEYWORD_LEN];
-              int type_id;
-          } MatchResult;
           
           __declspec(dllexport) void* __stdcall Trie_Create(void) {
               return trie_new();
           }
           
-          __declspec(dllexport) int __stdcall Trie_Add(void* trie, const char* keyword, int type_id) {
-              return trie_store((Trie*)trie, keyword, (void*)(intptr_t)type_id);
+          __declspec(dllexport) int __stdcall Trie_Add(void* trie, const char* key, int type) {
+              return trie_store((Trie*)trie, key, (void*)(intptr_t)type);
           }
+          
+          typedef struct {
+              char keyword[256];
+              int type_id;
+          } MatchResult;
           
           __declspec(dllexport) int __stdcall Trie_SearchAll(void* trie, const char* text, MatchResult* results, int* count) {
               int max = *count;
@@ -44,20 +49,17 @@ jobs:
               int len = strlen(text);
               
               for (int start = 0; start < len && found < max; start++) {
-                  TrieState *state = trie_root((Trie*)trie);
+                  TrieState* state = trie_root((Trie*)trie);
                   for (int pos = start; pos < len; pos++) {
                       if (!trie_state_walk(state, text[pos])) break;
                       if (trie_state_is_terminal(state)) {
-                          void *data = trie_state_get_data(state);
+                          void* data = trie_state_get_data(state);
                           if (data) {
                               int klen = pos - start + 1;
-                              if (klen < MAX_KEYWORD_LEN) {
-                                  memcpy(results[found].keyword, &text[start], klen);
-                                  results[found].keyword[klen] = 0;
-                                  results[found].type_id = (int)(intptr_t)data;
-                                  found++;
-                                  if (found >= max) break;
-                              }
+                              memcpy(results[found].keyword, &text[start], klen);
+                              results[found].keyword[klen] = 0;
+                              results[found].type_id = (int)(intptr_t)data;
+                              found++;
                           }
                       }
                   }
@@ -67,30 +69,18 @@ jobs:
               return found > 0;
           }
           
-          __declspec(dllexport) int __stdcall Trie_Delete(void* trie, const char* keyword) {
-              return trie_delete((Trie*)trie, keyword);
-          }
-          
           __declspec(dllexport) void __stdcall Trie_Free(void* trie) {
               trie_free((Trie*)trie);
           }
-          EOF
+          "@
           
-      - name: 编译封装DLL
-        run: |
-          # 使用 mingw 编译，链接到下载的 libdatrie
-          i686-w64-mingw32-gcc \
-            -shared \
-            -o TrieDLL.dll \
-            trie_wrapper.c \
-            -I./mingw32/include \
-            -L./mingw32/lib \
-            -ldatrie \
-            -Wl,--kill-at \
-            -static-libgcc
+          $code | Out-File -FilePath trie.c -Encoding ASCII
           
-      - name: 上传DLL
+          # 编译
+          gcc -shared -o TrieDLL.dll trie.c -I./vcpkg/installed/x86-windows/include -L./vcpkg/installed/x86-windows/lib -ldatrie -Wl,--kill-at
+      
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: TrieDLL-可用版
+          name: TrieDLL
           path: TrieDLL.dll
